@@ -11,22 +11,14 @@ import streamlit as st
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 st.set_page_config(
-    page_title="Sistema de Certificados Electorales",
+    page_title="Extractor de Certificados Electorales",
     page_icon="🗳️",
     layout="wide",
 )
 
-ALIASES_CEDULA = [
-    "cedula", "cédula", "cc", "documento", "num", "numero",
-    "número", "identificacion", "identificación"
-]
-ALIASES_NOMBRE = ["nombre", "nombres", "apellidos", "nombres y apellidos"]
-ALIASES_PUESTO = ["puesto", "puesto de votacion", "puesto de votación"]
-ALIASES_ZONA = ["zona"]
-ALIASES_MESA = ["mesa"]
-ALIASES_LINK = ["link", "link_certificado", "certificado", "url", "enlace"]
-
-
+# =========================================================
+# UTILIDADES
+# =========================================================
 def normalizar_texto(valor):
     if pd.isna(valor):
         return ""
@@ -46,94 +38,6 @@ def slug_nombre(valor):
     valor = re.sub(r"[^A-Z0-9]+", "_", valor)
     valor = re.sub(r"_+", "_", valor).strip("_")
     return valor[:120]
-
-
-def detectar_columna(columnas, aliases):
-    columnas_norm = {c: normalizar_texto(c) for c in columnas}
-
-    for col, col_norm in columnas_norm.items():
-        for alias in aliases:
-            if col_norm == normalizar_texto(alias):
-                return col
-
-    for col, col_norm in columnas_norm.items():
-        for alias in aliases:
-            if normalizar_texto(alias) in col_norm:
-                return col
-
-    return None
-
-
-def leer_base(archivo):
-    nombre = archivo.name.lower()
-
-    if nombre.endswith(".csv"):
-        try:
-            return pd.read_csv(archivo)
-        except Exception:
-            archivo.seek(0)
-            return pd.read_csv(archivo, encoding="latin-1")
-
-    return pd.read_excel(archivo)
-
-
-def preparar_base(df):
-    df = df.copy()
-
-    col_cedula = detectar_columna(df.columns, ALIASES_CEDULA)
-    col_nombre = detectar_columna(df.columns, ALIASES_NOMBRE)
-    col_puesto = detectar_columna(df.columns, ALIASES_PUESTO)
-    col_zona = detectar_columna(df.columns, ALIASES_ZONA)
-    col_mesa = detectar_columna(df.columns, ALIASES_MESA)
-    col_link = detectar_columna(df.columns, ALIASES_LINK)
-
-    if col_cedula is None:
-        st.error("La base debe tener una columna de cédula.")
-        st.stop()
-
-    if col_nombre is None:
-        df["NOMBRE"] = ""
-        col_nombre = "NOMBRE"
-
-    if col_puesto is None:
-        df["PUESTO"] = ""
-        col_puesto = "PUESTO"
-
-    if col_zona is None:
-        df["ZONA"] = ""
-        col_zona = "ZONA"
-
-    if col_mesa is None:
-        df["MESA"] = ""
-        col_mesa = "MESA"
-
-    if col_link is None:
-        df["LINK_CERTIFICADO"] = ""
-        col_link = "LINK_CERTIFICADO"
-
-    if "ESTADO_CRUCE" not in df.columns:
-        df["ESTADO_CRUCE"] = ""
-
-    if "OBSERVACION" not in df.columns:
-        df["OBSERVACION"] = ""
-
-    if "ARCHIVO_CERTIFICADO" not in df.columns:
-        df["ARCHIVO_CERTIFICADO"] = ""
-
-    df["_CEDULA"] = df[col_cedula].astype(str).apply(solo_digitos)
-    df["_NOMBRE"] = df[col_nombre].astype(str).apply(normalizar_texto)
-    df["_PUESTO"] = df[col_puesto].astype(str).apply(normalizar_texto)
-    df["_ZONA"] = df[col_zona].astype(str).apply(solo_digitos)
-    df["_MESA"] = df[col_mesa].astype(str).apply(solo_digitos)
-    df["LINK_CERTIFICADO"] = df[col_link].astype(str)
-
-    return df
-
-
-def dataframe_limpio(df):
-    df = df.copy()
-    cols_aux = [c for c in df.columns if c.startswith("_") or c == "TEXTO_OCR"]
-    return df.drop(columns=cols_aux, errors="ignore")
 
 
 def tesseract_disponible():
@@ -213,79 +117,15 @@ def extraer_campos(texto, nombre_archivo):
         cedula = m.group(1) if m else ""
 
     return {
-        "CEDULA_EXTRAIDA": cedula,
-        "NOMBRE_EXTRAIDO": nombre,
-        "DEPARTAMENTO_EXTRAIDO": departamento,
-        "MUNICIPIO_EXTRAIDO": municipio,
-        "PUESTO_EXTRAIDO": puesto,
-        "ZONA_EXTRAIDA": zona,
-        "MESA_EXTRAIDA": mesa,
+        "CEDULA": cedula,
+        "NOMBRE": nombre,
+        "DEPARTAMENTO": departamento,
+        "MUNICIPIO": municipio,
+        "PUESTO": puesto,
+        "ZONA": zona,
+        "MESA": mesa,
         "TEXTO_OCR": t,
     }
-
-
-def score_match(base_row, extraido):
-    score = 0
-    razones = []
-
-    if base_row["_CEDULA"] and extraido["CEDULA_EXTRAIDA"] and base_row["_CEDULA"] == extraido["CEDULA_EXTRAIDA"]:
-        score += 100
-        razones.append("CEDULA")
-
-    if base_row["_MESA"] and extraido["MESA_EXTRAIDA"] and base_row["_MESA"] == extraido["MESA_EXTRAIDA"]:
-        score += 15
-        razones.append("MESA")
-
-    if base_row["_ZONA"] and extraido["ZONA_EXTRAIDA"] and base_row["_ZONA"] == extraido["ZONA_EXTRAIDA"]:
-        score += 10
-        razones.append("ZONA")
-
-    if base_row["_PUESTO"] and extraido["PUESTO_EXTRAIDO"]:
-        if base_row["_PUESTO"] in extraido["PUESTO_EXTRAIDO"] or extraido["PUESTO_EXTRAIDO"] in base_row["_PUESTO"]:
-            score += 12
-            razones.append("PUESTO")
-
-    if base_row["_NOMBRE"] and extraido["NOMBRE_EXTRAIDO"]:
-        base_tokens = set(base_row["_NOMBRE"].split())
-        ext_tokens = set(extraido["NOMBRE_EXTRAIDO"].split())
-        inter = len(base_tokens.intersection(ext_tokens))
-        if inter >= 2:
-            score += min(inter * 5, 20)
-            razones.append("NOMBRE")
-
-    return score, ", ".join(razones)
-
-
-def cruzar_registro(df_base, extraido):
-    candidatos = []
-
-    if extraido["CEDULA_EXTRAIDA"]:
-        sub = df_base[df_base["_CEDULA"] == extraido["CEDULA_EXTRAIDA"]]
-        for idx, row in sub.iterrows():
-            score, razones = score_match(row, extraido)
-            candidatos.append((idx, score, razones))
-
-    if not candidatos and extraido["MESA_EXTRAIDA"]:
-        sub = df_base[df_base["_MESA"] == extraido["MESA_EXTRAIDA"]]
-        if extraido["ZONA_EXTRAIDA"]:
-            sub = sub[sub["_ZONA"] == extraido["ZONA_EXTRAIDA"]]
-        for idx, row in sub.iterrows():
-            score, razones = score_match(row, extraido)
-            candidatos.append((idx, score, razones))
-
-    if not candidatos and extraido["NOMBRE_EXTRAIDO"]:
-        nombre_tokens = set(extraido["NOMBRE_EXTRAIDO"].split())
-        for idx, row in df_base.iterrows():
-            base_tokens = set(row["_NOMBRE"].split())
-            if len(nombre_tokens.intersection(base_tokens)) >= 2:
-                score, razones = score_match(row, extraido)
-                candidatos.append((idx, score, razones))
-
-    if not candidatos:
-        return None, 0, "SIN COINCIDENCIA"
-
-    candidatos.sort(key=lambda x: x[1], reverse=True)
-    return candidatos[0]
 
 
 def generar_nombre_archivo(cedula, nombre, original):
@@ -295,12 +135,10 @@ def generar_nombre_archivo(cedula, nombre, original):
     return f"SIN_CEDULA_{slug_nombre(nombre) or slug_nombre(Path(original).stem) or 'ARCHIVO'}{ext}"
 
 
-def generar_excel(df_base, df_resultados, df_no_reg):
+def generar_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        dataframe_limpio(df_base).to_excel(writer, index=False, sheet_name="base_actualizada")
-        dataframe_limpio(df_resultados).to_excel(writer, index=False, sheet_name="certificados_procesados")
-        dataframe_limpio(df_no_reg).to_excel(writer, index=False, sheet_name="no_registrados")
+        df.to_excel(writer, index=False, sheet_name="certificados")
     output.seek(0)
     return output.getvalue()
 
@@ -314,154 +152,90 @@ def generar_zip(archivos_dict):
     return output.getvalue()
 
 
-st.title("🗳️ Sistema de certificados electorales")
-st.caption("Cruza certificados contra tu base y prepara archivos para Google Sheets.")
-
-with st.sidebar:
-    st.header("Configuración")
-    umbral_match = st.slider("Umbral de coincidencia", 60, 130, 100, 5)
+# =========================================================
+# INTERFAZ
+# =========================================================
+st.title("🗳️ Extractor de certificados electorales")
+st.caption("Sube certificados, extrae los datos y genera una tabla con el certificado adjunto por nombre de archivo.")
 
 if not tesseract_disponible():
-    st.error("Tesseract no está disponible en el entorno. Revisa packages.txt.")
+    st.error("Tesseract no está disponible. Revisa packages.txt.")
     st.stop()
 
-col1, col2 = st.columns(2)
-
-with col1:
-    archivo_base = st.file_uploader("Sube la base", type=["xlsx", "xls", "csv"])
-
-with col2:
-    certificados = st.file_uploader(
-        "Sube certificados (JPG, JPEG, PNG)",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True,
-    )
-
-if archivo_base is None:
-    st.info("Sube primero la base.")
-    st.stop()
-
-try:
-    df_base = preparar_base(leer_base(archivo_base))
-except Exception as e:
-    st.error(f"Error leyendo la base: {e}")
-    st.stop()
-
-with st.expander("Vista previa de la base"):
-    st.dataframe(dataframe_limpio(df_base).head(20), use_container_width=True)
+certificados = st.file_uploader(
+    "Sube certificados (JPG, JPEG, PNG)",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,
+)
 
 if not certificados:
-    st.warning("Ahora sube los certificados.")
+    st.info("Sube uno o varios certificados para comenzar.")
     st.stop()
 
 if st.button("Procesar certificados", type="primary", use_container_width=True):
     resultados = []
-    no_registrados = []
     archivos_zip = {}
 
     barra = st.progress(0)
+    estado = st.empty()
+
     total = len(certificados)
 
     for i, archivo in enumerate(certificados, start=1):
+        estado.write(f"Procesando {i}/{total}: {archivo.name}")
+
         try:
             imagen = Image.open(archivo).convert("RGB")
             texto = extraer_texto(imagen)
             extraido = extraer_campos(texto, archivo.name)
-            idx_match, score, razones = cruzar_registro(df_base, extraido)
 
             nombre_final = generar_nombre_archivo(
-                extraido["CEDULA_EXTRAIDA"],
-                extraido["NOMBRE_EXTRAIDO"],
+                extraido["CEDULA"],
+                extraido["NOMBRE"],
                 archivo.name,
             )
 
             archivos_zip[f"CERTIFICADOS_RENOMBRADOS/{nombre_final}"] = archivo.getvalue()
 
-            if idx_match is not None and score >= umbral_match:
-                df_base.at[idx_match, "ESTADO_CRUCE"] = "ENCONTRADO"
-                df_base.at[idx_match, "OBSERVACION"] = f"MATCH {score} - {razones}"
-                df_base.at[idx_match, "ARCHIVO_CERTIFICADO"] = nombre_final
-
-                if not str(df_base.at[idx_match, "LINK_CERTIFICADO"]).strip():
-                    df_base.at[idx_match, "LINK_CERTIFICADO"] = f"PENDIENTE_SUBIR_A_DRIVE/{nombre_final}"
-
-                estado_cruce = "ENCONTRADO"
-                observacion = f"MATCH {score} - {razones}"
-                indice_base = idx_match
-            else:
-                estado_cruce = "NO_REGISTRADO"
-                observacion = f"SIN MATCH SUFICIENTE ({score}) - {razones}"
-                indice_base = None
-
-                no_registrados.append({
-                    "CEDULA": extraido["CEDULA_EXTRAIDA"],
-                    "NOMBRE": extraido["NOMBRE_EXTRAIDO"],
-                    "DEPARTAMENTO": extraido["DEPARTAMENTO_EXTRAIDO"],
-                    "MUNICIPIO": extraido["MUNICIPIO_EXTRAIDO"],
-                    "PUESTO": extraido["PUESTO_EXTRAIDO"],
-                    "ZONA": extraido["ZONA_EXTRAIDA"],
-                    "MESA": extraido["MESA_EXTRAIDA"],
-                    "ESTADO_CRUCE": estado_cruce,
-                    "OBSERVACION": observacion,
-                    "ARCHIVO_CERTIFICADO": nombre_final,
-                    "LINK_CERTIFICADO": f"PENDIENTE_SUBIR_A_DRIVE/{nombre_final}",
-                })
-
             resultados.append({
-                **extraido,
+                "CEDULA": extraido["CEDULA"],
+                "NOMBRE": extraido["NOMBRE"],
+                "DEPARTAMENTO": extraido["DEPARTAMENTO"],
+                "MUNICIPIO": extraido["MUNICIPIO"],
+                "PUESTO": extraido["PUESTO"],
+                "ZONA": extraido["ZONA"],
+                "MESA": extraido["MESA"],
                 "ARCHIVO_ORIGINAL": archivo.name,
                 "ARCHIVO_CERTIFICADO": nombre_final,
-                "ESTADO_CRUCE": estado_cruce,
-                "OBSERVACION": observacion,
-                "INDICE_BASE": indice_base,
-                "SCORE_MATCH": score,
-                "CRITERIOS_MATCH": razones,
+                "LINK_CERTIFICADO": f"PENDIENTE_SUBIR_A_DRIVE/{nombre_final}",
             })
 
         except Exception as e:
             resultados.append({
-                "CEDULA_EXTRAIDA": "",
-                "NOMBRE_EXTRAIDO": "",
-                "DEPARTAMENTO_EXTRAIDO": "",
-                "MUNICIPIO_EXTRAIDO": "",
-                "PUESTO_EXTRAIDO": "",
-                "ZONA_EXTRAIDA": "",
-                "MESA_EXTRAIDA": "",
-                "TEXTO_OCR": "",
+                "CEDULA": "",
+                "NOMBRE": "",
+                "DEPARTAMENTO": "",
+                "MUNICIPIO": "",
+                "PUESTO": "",
+                "ZONA": "",
+                "MESA": "",
                 "ARCHIVO_ORIGINAL": archivo.name,
                 "ARCHIVO_CERTIFICADO": archivo.name,
-                "ESTADO_CRUCE": "ERROR",
-                "OBSERVACION": str(e),
-                "INDICE_BASE": None,
-                "SCORE_MATCH": 0,
-                "CRITERIOS_MATCH": "",
+                "LINK_CERTIFICADO": "",
+                "ERROR": str(e),
             })
 
         barra.progress(i / total)
 
     df_resultados = pd.DataFrame(resultados)
-    df_no_reg = pd.DataFrame(no_registrados)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Encontrados", int((df_resultados["ESTADO_CRUCE"] == "ENCONTRADO").sum()))
-    c2.metric("No registrados", int((df_resultados["ESTADO_CRUCE"] == "NO_REGISTRADO").sum()))
-    c3.metric("Errores", int((df_resultados["ESTADO_CRUCE"] == "ERROR").sum()))
-
-    tab1, tab2, tab3 = st.tabs(["Base actualizada", "Procesados", "No registrados"])
-
-    with tab1:
-        st.dataframe(dataframe_limpio(df_base), use_container_width=True, height=500)
-
-    with tab2:
-        st.dataframe(dataframe_limpio(df_resultados), use_container_width=True, height=500)
-
-    with tab3:
-        st.dataframe(dataframe_limpio(df_no_reg), use_container_width=True, height=500)
+    st.success("Procesamiento terminado.")
+    st.dataframe(df_resultados, use_container_width=True, height=500)
 
     st.download_button(
-        "Descargar Excel final",
-        data=generar_excel(df_base, df_resultados, df_no_reg),
-        file_name="resultado_certificados_electorales.xlsx",
+        "Descargar Excel",
+        data=generar_excel(df_resultados),
+        file_name="certificados_extraidos.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True,
     )
@@ -473,3 +247,42 @@ if st.button("Procesar certificados", type="primary", use_container_width=True):
         mime="application/zip",
         use_container_width=True,
     )
+
+    st.markdown("### Apps Script opcional para pegar links en Google Sheets")
+    st.code(
+        """
+function vincularCertificados() {
+  const carpetaId = 'PEGA_AQUI_ID_CARPETA';
+  const hoja = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const data = hoja.getDataRange().getValues();
+  const encabezados = data[0];
+
+  const colArchivo = encabezados.indexOf('ARCHIVO_CERTIFICADO');
+  const colLink = encabezados.indexOf('LINK_CERTIFICADO');
+
+  if (colArchivo === -1 || colLink === -1) {
+    throw new Error('La hoja debe tener ARCHIVO_CERTIFICADO y LINK_CERTIFICADO');
+  }
+
+  const mapa = {};
+  for (let i = 1; i < data.length; i++) {
+    const archivo = String(data[i][colArchivo] || '').trim();
+    if (archivo) mapa[archivo] = i + 1;
+  }
+
+  const archivos = DriveApp.getFolderById(carpetaId).getFiles();
+
+  while (archivos.hasNext()) {
+    const archivo = archivos.next();
+    const nombre = archivo.getName();
+
+    if (mapa[nombre]) {
+      hoja.getRange(mapa[nombre], colLink + 1).setValue(archivo.getUrl());
+    }
+  }
+}
+        """,
+        language="javascript",
+    )
+
+    st.info("Si luego subes el ZIP a Drive, puedes usar ese script para llenar automáticamente la columna LINK_CERTIFICADO en Google Sheets.")
