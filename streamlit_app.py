@@ -1,23 +1,17 @@
 import io
-import os
 import re
 import zipfile
-import shutil
 import unicodedata
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
-
-# OCR
 import easyocr
 
 st.set_page_config(page_title="Sistema de Certificados Electorales", page_icon="🗳️", layout="wide")
 
-# ============================================================
-# CONFIG
-# ============================================================
 COLUMNAS_SUGERIDAS = [
     "CEDULA",
     "NOMBRE",
@@ -39,9 +33,7 @@ ALIASES_ZONA = ["zona"]
 ALIASES_MESA = ["mesa"]
 ALIASES_LINK = ["link", "link_certificado", "certificado", "url", "enlace"]
 
-# ============================================================
-# UTILS
-# ============================================================
+
 def normalizar_texto(s: str) -> str:
     if pd.isna(s):
         return ""
@@ -121,12 +113,6 @@ def preparar_base(df: pd.DataFrame) -> pd.DataFrame:
     df["ARCHIVO_CERTIFICADO"] = df.get("ARCHIVO_CERTIFICADO", "")
     df["LINK_CERTIFICADO"] = df[col_link].astype(str)
 
-    df.attrs["col_cedula"] = col_cedula
-    df.attrs["col_nombre"] = col_nombre
-    df.attrs["col_puesto"] = col_puesto
-    df.attrs["col_zona"] = col_zona
-    df.attrs["col_mesa"] = col_mesa
-    df.attrs["col_link"] = col_link
     return df
 
 
@@ -152,14 +138,13 @@ def mejorar_imagen(img: Image.Image) -> Image.Image:
 def extraer_texto(reader, img: Image.Image):
     imagen = mejorar_imagen(img)
     resultado = reader.readtext(
-        image=np.array(imagen),
+        np.array(imagen),
         detail=0,
         paragraph=True,
         width_ths=0.7,
         link_threshold=0.4,
     )
-    texto = "\n".join([str(x) for x in resultado])
-    return texto
+    return "\n".join([str(x) for x in resultado])
 
 
 def buscar_patron(pattern, texto, flags=0, group=1, default=""):
@@ -179,8 +164,6 @@ def limpiar_nombre_extraido(valor: str) -> str:
 def extraer_campos(texto: str, nombre_archivo: str):
     t = normalizar_texto(texto)
     t = t.replace("MUNICIPIO/DISTRITO", "MUNICIPIO DISTRITO")
-    t = t.replace("PUESTO DE VOTACION", "PUESTO DE VOTACION")
-    t = t.replace("NOMBRES Y APELLIDOS", "NOMBRES Y APELLIDOS")
 
     departamento = buscar_patron(r"\b(ATLANTICO)\b", t)
     municipio = buscar_patron(r"\b(BARRANQUILLA)\b", t)
@@ -188,7 +171,7 @@ def extraer_campos(texto: str, nombre_archivo: str):
     mesa = buscar_patron(r"\bMESA\s*(\d{1,3})\b", t)
 
     puesto = buscar_patron(
-        r"(?:DEPARTAMENTO\s+ATLANTICO\s+)?(?:BARRANQUILLA\s+)?(.+?)\s+PUESTO DE VOTACION",
+        r"(?:ATLANTICO\s+DEPARTAMENTO\s+)?(?:BARRANQUILLA\s+MUNICIPIO DISTRITO\s+)?(.+?)\s+PUESTO DE VOTACION",
         t,
         flags=re.DOTALL,
     )
@@ -225,20 +208,17 @@ def score_match(base_row, extraido):
     score = 0
     razones = []
 
-    if base_row["_CEDULA"] and extraido["CEDULA_EXTRAIDA"]:
-        if base_row["_CEDULA"] == extraido["CEDULA_EXTRAIDA"]:
-            score += 100
-            razones.append("CEDULA")
+    if base_row["_CEDULA"] and extraido["CEDULA_EXTRAIDA"] and base_row["_CEDULA"] == extraido["CEDULA_EXTRAIDA"]:
+        score += 100
+        razones.append("CEDULA")
 
-    if base_row["_MESA"] and extraido["MESA_EXTRAIDA"]:
-        if base_row["_MESA"] == extraido["MESA_EXTRAIDA"]:
-            score += 15
-            razones.append("MESA")
+    if base_row["_MESA"] and extraido["MESA_EXTRAIDA"] and base_row["_MESA"] == extraido["MESA_EXTRAIDA"]:
+        score += 15
+        razones.append("MESA")
 
-    if base_row["_ZONA"] and extraido["ZONA_EXTRAIDA"]:
-        if base_row["_ZONA"] == extraido["ZONA_EXTRAIDA"]:
-            score += 10
-            razones.append("ZONA")
+    if base_row["_ZONA"] and extraido["ZONA_EXTRAIDA"] and base_row["_ZONA"] == extraido["ZONA_EXTRAIDA"]:
+        score += 10
+        razones.append("ZONA")
 
     if base_row["_PUESTO"] and extraido["PUESTO_EXTRAIDO"]:
         if base_row["_PUESTO"] in extraido["PUESTO_EXTRAIDO"] or extraido["PUESTO_EXTRAIDO"] in base_row["_PUESTO"]:
@@ -300,8 +280,7 @@ def generar_nombre_archivo(cedula, nombre, original):
 def dataframe_para_descarga(df):
     salida = df.copy()
     cols_aux = [c for c in salida.columns if c.startswith("_") or c == "TEXTO_OCR"]
-    salida = salida.drop(columns=cols_aux, errors="ignore")
-    return salida
+    return salida.drop(columns=cols_aux, errors="ignore")
 
 
 def a_excel_bytes(df1, df2, df3):
@@ -323,28 +302,30 @@ def zip_certificados(archivos_dict):
     return mem.getvalue()
 
 
-# numpy import tardío para evitar error si no se usa OCR todavía
-import numpy as np
+@st.cache_resource
+def get_reader():
+    return easyocr.Reader(["es", "en"], gpu=False)
 
-# ============================================================
-# SIDEBAR
-# ============================================================
+
 st.title("🗳️ Sistema completo de certificados electorales")
 st.caption("Carga base + certificados, extrae datos, cruza registros, adjunta evidencia y genera salidas listas para Google Sheets.")
 
 with st.sidebar:
     st.header("Configuración")
-    idioma_ocr = st.selectbox("Idioma OCR", ["es", "es,en"], index=0)
     umbral_match = st.slider("Umbral de coincidencia aceptada", min_value=60, max_value=130, value=100, step=5)
     st.markdown("**Flujo recomendado**")
-    st.markdown("1. Exporta tu Google Sheet a Excel o CSV.\n2. Carga la base aquí.\n3. Carga los certificados en JPG, PNG o PDF convertido a imagen.\n4. Descarga el Excel final y el ZIP renombrado.")
+    st.markdown(
+        "1. Exporta tu Google Sheet a Excel o CSV.\n"
+        "2. Carga la base aquí.\n"
+        "3. Carga los certificados en JPG, JPEG o PNG.\n"
+        "4. Descarga el Excel final y el ZIP renombrado."
+    )
 
-# ============================================================
-# INPUTS
-# ============================================================
-col1, col2 = st.columns([1, 1])
+col1, col2 = st.columns(2)
+
 with col1:
     archivo_base = st.file_uploader("Sube la base exportada de Google Sheets", type=["xlsx", "xls", "csv"])
+
 with col2:
     certificados = st.file_uploader(
         "Sube certificados (JPG, JPEG, PNG)",
@@ -356,9 +337,6 @@ if archivo_base is None:
     st.info("Sube primero la base exportada desde Google Sheets.")
     st.stop()
 
-# ============================================================
-# BASE
-# ============================================================
 df_base_raw = leer_base(archivo_base)
 df_base = preparar_base(df_base_raw)
 
@@ -369,23 +347,13 @@ if not certificados:
     st.warning("Ahora sube los certificados para procesarlos.")
     st.stop()
 
-# ============================================================
-# OCR READER CACHE
-# ============================================================
-@st.cache_resource
-def get_reader(langs):
-    return easyocr.Reader(langs, gpu=False)
+reader = get_reader()
 
-langs = ["es"] if idioma_ocr == "es" else ["es", "en"]
-reader = get_reader(langs)
-
-# ============================================================
-# PROCESS
-# ============================================================
 if st.button("Procesar certificados", type="primary", use_container_width=True):
     resultados = []
     no_registrados = []
     archivos_zip = {}
+
     progreso = st.progress(0)
     estado = st.empty()
 
@@ -406,8 +374,7 @@ if st.button("Procesar certificados", type="primary", use_container_width=True):
                 archivo.name,
             )
 
-            contenido = archivo.getvalue()
-            archivos_zip[f"CERTIFICADOS_RENOMBRADOS/{nombre_final}"] = contenido
+            archivos_zip[f"CERTIFICADOS_RENOMBRADOS/{nombre_final}"] = archivo.getvalue()
 
             if idx_match is not None and score >= umbral_match:
                 df_base.at[idx_match, "ESTADO_CRUCE"] = "ENCONTRADO"
@@ -477,6 +444,7 @@ if st.button("Procesar certificados", type="primary", use_container_width=True):
     a = int((df_resultados["ESTADO_CRUCE"] == "ENCONTRADO").sum())
     b = int((df_resultados["ESTADO_CRUCE"] == "NO_REGISTRADO").sum())
     c = int((df_resultados["ESTADO_CRUCE"] == "ERROR").sum())
+
     m1, m2, m3 = st.columns(3)
     m1.metric("Encontrados", a)
     m2.metric("No registrados", b)
@@ -524,12 +492,11 @@ function vincularCertificados() {
   const data = hoja.getDataRange().getValues();
   const encabezados = data[0];
 
-  const colCedula = encabezados.indexOf('CEDULA');
   const colArchivo = encabezados.indexOf('ARCHIVO_CERTIFICADO');
   const colLink = encabezados.indexOf('LINK_CERTIFICADO');
 
-  if (colCedula === -1 || colArchivo === -1 || colLink === -1) {
-    throw new Error('La hoja debe tener CEDULA, ARCHIVO_CERTIFICADO y LINK_CERTIFICADO');
+  if (colArchivo === -1 || colLink === -1) {
+    throw new Error('La hoja debe tener ARCHIVO_CERTIFICADO y LINK_CERTIFICADO');
   }
 
   const mapa = {};
@@ -552,4 +519,4 @@ function vincularCertificados() {
         language="javascript",
     )
 
-    st.info("Sube el ZIP a una carpeta de Drive, descomprímelo, pega el Apps Script en la hoja y ejecuta la función vincularCertificados().")
+    st.info("Sube el ZIP a una carpeta de Drive, descomprímelo, pega el Apps Script en la hoja y ejecuta vincularCertificados().")
